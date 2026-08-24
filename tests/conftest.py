@@ -21,15 +21,30 @@ Marked tests are **skipped by default** and only run with the env flag set:
 
     OPENMONTAGE_ALLOW_NETWORK=1 pytest -m live_api
 
+The guard also drops HTTP(S) proxy configuration for the session. A proxy
+defeats the socket check completely: `requests` connects to the proxy — which
+usually listens on 127.0.0.1 — and loopback is allowed, so the call tunnels
+straight through to the real endpoint. macOS makes this easy to hit without
+noticing, because `getproxies()` reads the system proxy out of
+SystemConfiguration even when no env var is set. Proxies are left untouched
+when the operator opts in, so a live test still reaches the network on a
+proxy-only corporate network.
+
 Limitation: this guards the pytest process. A test that shells out to a
 subprocess (node, ffmpeg, npx) is outside its reach — don't call paid APIs
 from a subprocess in tests.
+
+Limitation: dropping the ambient proxy does not stop code that passes
+`proxies=` to `requests` itself, since an explicit argument outranks NO_PROXY.
+No tool does that today; if one ever needs to, it has to be mocked in tests
+like any other transport.
 """
 
 from __future__ import annotations
 
 import os
 import socket
+import urllib.request
 
 import pytest
 
@@ -40,6 +55,12 @@ _LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0", ""}
 _real_connect = socket.socket.connect
 _real_connect_ex = socket.socket.connect_ex
 _real_create_connection = socket.create_connection
+_real_getproxies = urllib.request.getproxies
+
+_PROXY_ENV_VARS = (
+    "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    "http_proxy", "https_proxy", "all_proxy",
+)
 
 
 class NetworkCallInTestError(RuntimeError):
@@ -100,6 +121,16 @@ def _block_network():
             raise _blocked(address)
         return _real_create_connection(address, *args, **kwargs)
 
+    # Route every request straight at its real host. Left in place, a proxy on
+    # 127.0.0.1 would satisfy the loopback exemption above and carry the call
+    # out to the provider anyway.
+    saved_env = {var: os.environ.pop(var, None) for var in _PROXY_ENV_VARS}
+    saved_env["NO_PROXY"] = os.environ.get("NO_PROXY")
+    saved_env["no_proxy"] = os.environ.get("no_proxy")
+    os.environ["NO_PROXY"] = "*"
+    os.environ["no_proxy"] = "*"
+    urllib.request.getproxies = lambda: {}
+
     socket.socket.connect = guarded_connect
     socket.socket.connect_ex = guarded_connect_ex
     socket.create_connection = guarded_create_connection
@@ -109,6 +140,12 @@ def _block_network():
         socket.socket.connect = _real_connect
         socket.socket.connect_ex = _real_connect_ex
         socket.create_connection = _real_create_connection
+        urllib.request.getproxies = _real_getproxies
+        for var, value in saved_env.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
 
 
 def pytest_configure(config):
