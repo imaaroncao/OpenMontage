@@ -5,6 +5,7 @@ If these fail, every other test in the suite is one bug away from spending money
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
@@ -30,6 +31,38 @@ class TestGuardBlocksOutbound:
         requests = pytest.importorskip("requests")
         with pytest.raises(Exception):
             requests.get("https://api.atlascloud.ai/api/v1/model/prediction/x", timeout=5)
+
+    def test_an_ambient_proxy_cannot_smuggle_the_call_out(self, monkeypatch):
+        """A proxy must not become a hole in the guard.
+
+        `requests` sends a proxied call to the proxy's address, and proxies
+        usually listen on 127.0.0.1 — which the loopback exemption permits. A
+        machine with a proxy configured (Charles, Proxyman, a corporate MDM
+        profile, an agent sandbox) would therefore tunnel the call out to the
+        real endpoint while every other assertion here still looked green.
+
+        The proxy is set here rather than inherited from the host, so the
+        regression stays catchable on CI runners, which have no proxy at all.
+        """
+        requests = pytest.importorskip("requests")
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8234")
+        monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8234")
+        with pytest.raises(Exception) as exc:
+            requests.get(
+                "https://api.atlascloud.ai/api/v1/model/prediction/x", timeout=5
+            )
+        assert "Blocked a network connection" in str(exc.value)
+
+    def test_guard_neutralises_ambient_proxy_configuration(self):
+        """The session must present no proxy to any client library.
+
+        An env-var check alone would miss macOS, where `getproxies()` reads the
+        system proxy out of SystemConfiguration.
+        """
+        import urllib.request
+
+        assert urllib.request.getproxies() == {}
+        assert os.environ.get("NO_PROXY") == "*"
 
     def test_loopback_still_permitted(self):
         """Local servers and fixtures must keep working."""
