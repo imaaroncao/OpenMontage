@@ -310,7 +310,13 @@ Load via `styles/playbook_loader.py`: `load_playbook("clean-professional")`
 ## Installed Agent Skills (Layer 3)
 
 All agent skills live in `.agents/skills/` and are managed via `npx skills add`.
-Claude Code accesses them via symlinks in `.claude/skills/`.
+Claude Code reaches them through `.claude/skills`, a single relative symlink to
+`.agents/skills/` — a newly added skill is visible to Claude Code immediately,
+with nothing to sync and no second copy to drift.
+
+> **Windows:** git checks that symlink out as a plain text file unless symlink
+> support is enabled. If `.claude/skills` appears as a file, turn on Developer
+> Mode or run `git config core.symlinks true` and re-checkout.
 
 | Category | Installed Skills | Source |
 |----------|-----------------|--------|
